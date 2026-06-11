@@ -98,13 +98,19 @@ def extrair_dados_intercom(token, inicio, fim):
     for conv in conversations:
         stats = conv.get("statistics", {})
         first_reply_ts = stats.get("first_admin_reply_at")
-        rating = conv.get("conversation_rating", {})
+        
+        # Aqui está a correção de segurança para o CSAT
+        rating = conv.get("conversation_rating")
+        if isinstance(rating, dict):
+            csat_val = rating.get("value")
+        else:
+            csat_val = None
         
         lista_final.append({
             "chat_id": conv.get("id"),
             "criado_em": datetime.fromtimestamp(conv.get("created_at")),
             "primeira_resposta_em": datetime.fromtimestamp(first_reply_ts) if first_reply_ts else None,
-            "csat": rating.get("value")
+            "csat": csat_val
         })
     return pd.DataFrame(lista_final)
 
