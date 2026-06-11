@@ -42,11 +42,9 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
     lista_final = []
     numeros_permitidos = ['554139060321', '554139060320']
     
-    # Cria uma lista com todos os dias do período selecionado
     dias = pd.date_range(start=inicio, end=fim)
     
     for dia in dias:
-        # Define o início e fim exatos para cada dia da lista
         inicio_dt = fuso_br.localize(datetime.combine(dia.date(), datetime.min.time()))
         fim_dt = fuso_br.localize(datetime.combine(dia.date(), datetime.max.time()))
         ts_inicio = int(inicio_dt.timestamp())
@@ -59,7 +57,6 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
             params["page"] = page
             response = requests.get(url, params=params, auth=auth)
             
-            # Se a API pedir para irmos mais devagar (Erro 429), ele pausa e tenta de novo
             if response.status_code == 429:
                 time.sleep(2)
                 continue
@@ -90,12 +87,10 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
                             "numero_telefone": numero_bruto
                         })
             
-            meta = data.get("meta", {})
-            if not meta.get("next_page_link") or page >= meta.get("max_pages", 1):
+            if len(calls) < 50:
                 break
             
             page += 1
-            # Pausa rápida para não sobrecarregar o Aircall
             time.sleep(0.2)
             
     return pd.DataFrame(lista_final)
@@ -113,25 +108,38 @@ def extrair_dados_intercom(token, inicio, fim):
         "Content-Type": "application/json"
     }
     
-    query = {
+    body = {
         "query": {
             "operator": "AND",
             "value": [
                 {"field": "created_at", "operator": ">", "value": ts_inicio},
                 {"field": "created_at", "operator": "<", "value": ts_fim},
-                {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
+                {"field": "team_assignee_id", "operator": "=", "value": "8115775"}
             ]
         }
     }
     
-    response = requests.post(url, json=query, headers=headers)
-    if response.status_code != 200:
-        st.error(f"Erro no Intercom: {response.status_code} - {response.text}")
-        return pd.DataFrame()
-        
-    data = response.json()
-    conversations = data.get("conversations", [])
+    conversations = []
     
+    while True:
+        response = requests.post(url, json=body, headers=headers)
+        if response.status_code != 200:
+            st.error(f"Erro no Intercom: {response.status_code} - {response.text}")
+            break
+            
+        data = response.json()
+        conversations.extend(data.get("conversations", []))
+        
+        pages = data.get("pages", {})
+        next_page = pages.get("next", {})
+        starting_after = next_page.get("starting_after")
+        
+        if not starting_after:
+            break
+            
+        body["pagination"] = {"starting_after": starting_after}
+        time.sleep(0.2)
+        
     lista_final = []
     for conv in conversations:
         stats = conv.get("statistics", {})
@@ -152,6 +160,7 @@ def extrair_dados_intercom(token, inicio, fim):
             "primeira_resposta_em": primeira_resposta_em,
             "csat": csat_val
         })
+        
     return pd.DataFrame(lista_final)
 
 if st.button("Processar Análise Real"):
