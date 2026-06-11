@@ -10,29 +10,26 @@ st.set_page_config(page_title="Análise Aircall e Intercom", layout="wide")
 st.title("Análise de Tempo de Resposta e CSAT")
 st.write("Mensuração do impacto da automação de status no atendimento.")
 
-# Menu lateral para configuração
-st.sidebar.header("Credenciais e Filtros")
-api_aircall = st.sidebar.text_input("Aircall API (Formato: ID:TOKEN)", type="password")
-api_intercom = st.sidebar.text_input("Token da API do Intercom", type="password")
+# Puxando as credenciais do arquivo oculto secrets.toml
+try:
+    aircall_id = st.secrets["AIRCALL_ID"]
+    aircall_token = st.secrets["AIRCALL_TOKEN"]
+    api_intercom = st.secrets["INTERCOM_TOKEN"]
+except KeyError:
+    st.error("Erro: As credenciais não foram encontradas no arquivo .streamlit/secrets.toml")
+    st.stop()
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Período de Análise")
+# Menu lateral apenas para os Filtros
+st.sidebar.header("Período de Análise")
 data_inicio = st.sidebar.date_input("Data de Início", datetime(2026, 1, 1))
 data_fim = st.sidebar.date_input("Data Final", datetime(2026, 1, 31))
 data_corte = st.sidebar.date_input("Data da Automação", datetime(2026, 1, 15))
 
-def extrair_dados_aircall(auth_str, inicio, fim):
-    # Converte as datas da interface para timestamp Unix
+def extrair_dados_aircall(api_id, api_token, inicio, fim):
     ts_inicio = int(time.mktime(inicio.timetuple()))
     ts_fim = int(time.mktime(fim.timetuple())) + 86399
     
-    # Divide o token se o usuário colocar no formato id:token para Basic Auth
-    if ":" in auth_str:
-        api_id, api_token = auth_str.split(":", 1)
-        auth = (api_id, api_token)
-    else:
-        auth = (auth_str, "")
-        
+    auth = (api_id, api_token)
     url = "https://api.aircall.io/v1/calls"
     params = {"from": ts_inicio, "to": ts_fim, "per_page": 50, "order": "asc"}
     
@@ -99,7 +96,6 @@ def extrair_dados_intercom(token, inicio, fim):
         stats = conv.get("statistics", {})
         first_reply_ts = stats.get("first_admin_reply_at")
         
-        # Aqui está a correção de segurança para o CSAT
         rating = conv.get("conversation_rating")
         if isinstance(rating, dict):
             csat_val = rating.get("value")
@@ -114,74 +110,65 @@ def extrair_dados_intercom(token, inicio, fim):
         })
     return pd.DataFrame(lista_final)
 
-if st.sidebar.button("Processar Análise Real"):
-    if not api_aircall or not api_intercom:
-        st.warning("Por favor, insira as credenciais nas barras laterais.")
-    else:
-        with st.spinner("Buscando dados das APIs e cruzando horários..."):
+if st.button("Processar Análise Real"):
+    with st.spinner("Buscando dados das APIs..."):
+        
+        df_ligacoes = extrair_dados_aircall(aircall_id, aircall_token, data_inicio, data_fim)
+        df_chats = extrair_dados_intercom(api_intercom, data_inicio, data_fim)
+        
+        if df_ligacoes.empty or df_chats.empty:
+            st.warning("Não encontramos registros completos para o período selecionado.")
+        else:
+            df_ligacoes['inicio_chamada'] = pd.to_datetime(df_ligacoes['inicio_chamada'])
+            df_ligacoes['fim_chamada'] = pd.to_datetime(df_ligacoes['fim_chamada'])
+            df_chats['criado_em'] = pd.to_datetime(df_chats['criado_em'])
+            df_chats['primeira_resposta_em'] = pd.to_datetime(df_chats['primeira_resposta_em'])
             
-            df_ligacoes = extrair_dados_aircall(api_aircall, data_inicio, data_fim)
-            df_chats = extrair_dados_intercom(api_intercom, data_inicio, data_fim)
+            df_chats['tpr_minutos'] = (df_chats['primeira_resposta_em'] - df_chats['criado_em']).dt.total_seconds() / 60
             
-            if df_ligacoes.empty or df_chats.empty:
-                st.error("Não encontramos registros em uma das plataformas para o período selecionado.")
+            chats_sobrepostos = []
+            for _, ligacao in df_ligacoes.iterrows():
+                mask = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
+                conversas_no_periodo = df_chats[mask].copy()
+                if not conversas_no_periodo.empty:
+                    conversas_no_periodo['atendente_telefone'] = ligacao['atendente']
+                    conversas_no_periodo['id_chamada'] = ligacao['call_id']
+                    chats_sobrepostos.append(conversas_no_periodo)
+            
+            if not chats_sobrepostos:
+                st.info("Nenhum chat entrou no exato momento em que os analistas estavam em ligações.")
             else:
-                # Conversão explícita de timezone/datetime para segurança no cruzamento
-                df_ligacoes['inicio_chamada'] = pd.to_datetime(df_ligacoes['inicio_chamada'])
-                df_ligacoes['fim_chamada'] = pd.to_datetime(df_ligacoes['fim_chamada'])
-                df_chats['criado_em'] = pd.to_datetime(df_chats['criado_em'])
-                df_chats['primeira_resposta_em'] = pd.to_datetime(df_chats['primeira_resposta_em'])
+                df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
                 
-                # Calcula o tempo de resposta em minutos
-                df_chats['tpr_minutos'] = (df_chats['primeira_resposta_em'] - df_chats['criado_em']).dt.total_seconds() / 60
+                dt_corte_convertida = pd.to_datetime(data_corte)
+                df_antes = df_final[df_final['criado_em'].dt.date < dt_corte_convertida.date()]
+                df_depois = df_final[df_final['criado_em'].dt.date >= dt_corte_convertida.date()]
                 
-                # Cruzamento: Identificar chats que entraram no intervalo exato de cada ligação
-                chats_sobrepostos = []
-                for _, ligacao in df_ligacoes.iterrows():
-                    mask = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
-                    conversas_no_periodo = df_chats[mask].copy()
-                    if not conversas_no_periodo.empty:
-                        conversas_no_periodo['atendente_telefone'] = ligacao['atendente']
-                        conversas_no_periodo['id_chamada'] = ligacao['call_id']
-                        chats_sobrepostos.append(conversas_no_periodo)
+                tpr_antes = df_antes['tpr_minutos'].mean() if not df_antes.empty else 0
+                tpr_depois = df_depois['tpr_minutos'].mean() if not df_depois.empty else 0
+                csat_antes = df_antes['csat'].mean() if not df_antes.empty else 0
+                csat_depois = df_depois['csat'].mean() if not df_depois.empty else 0
                 
-                if not chats_sobrepostos:
-                    st.info("Nenhum chat entrou no exato momento em que os analistas estavam em ligações.")
-                else:
-                    df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
+                st.subheader("Resultados do Cruzamento de Dados")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("### Antes da Automação")
+                    st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_antes:.1f} min")
+                    st.metric(label="Satisfação Média (CSAT)", value=f"{csat_antes:.1f} ★" if csat_antes > 0 else "Sem dados")
+                    st.caption(f"Total de chats em ligação: {len(df_antes)}")
                     
-                    # Divide os dados com base na data de criação da automação
-                    dt_corte_convertida = pd.to_datetime(data_corte)
-                    df_antes = df_final[df_final['criado_em'].dt.date < dt_corte_convertida.date()]
-                    df_depois = df_final[df_final['criado_em'].dt.date >= dt_corte_convertida.date()]
+                with col2:
+                    st.markdown("### Depois da Automação")
+                    delta_tpr = tpr_depois - tpr_antes
+                    delta_csat = csat_depois - csat_antes if csat_antes > 0 and csat_depois > 0 else 0
                     
-                    # Cálculos das métricas
-                    tpr_antes = df_antes['tpr_minutos'].mean() if not df_antes.empty else 0
-                    tpr_depois = df_depois['tpr_minutos'].mean() if not df_depois.empty else 0
-                    csat_antes = df_antes['csat'].mean() if not df_antes.empty else 0
-                    csat_depois = df_depois['csat'].mean() if not df_depois.empty else 0
+                    st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_depois:.1f} min", 
+                              delta=f"{delta_tpr:.1f} min", delta_color="inverse")
+                    st.metric(label="Satisfação Média (CSAT)", value=f"{csat_depois:.1f} ★" if csat_depois > 0 else "Sem dados",
+                              delta=f"{delta_csat:.1f} ★" if delta_csat != 0 else None)
+                    st.caption(f"Total de chats em ligação: {len(df_depois)}")
                     
-                    # Exibição na Interface
-                    st.subheader("Resultados do Cruzamento de Dados")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown("### Antes da Automação")
-                        st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_antes:.1f} min")
-                        st.metric(label="Satisfação Média (CSAT)", value=f"{csat_antes:.1f} ★" if csat_antes > 0 else "Sem dados")
-                        st.caption(f"Total de chats recebidos em ligação: {len(df_antes)}")
-                        
-                    with col2:
-                        st.markdown("### Depois da Automação")
-                        delta_tpr = tpr_depois - tpr_antes
-                        delta_csat = csat_depois - csat_antes if csat_antes > 0 and csat_depois > 0 else 0
-                        
-                        st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_depois:.1f} min", 
-                                  delta=f"{delta_tpr:.1f} min", delta_color="inverse")
-                        st.metric(label="Satisfação Média (CSAT)", value=f"{csat_depois:.1f} ★" if csat_depois > 0 else "Sem dados",
-                                  delta=f"{delta_csat:.1f} ★" if delta_csat != 0 else None)
-                        st.caption(f"Total de chats recebidos em ligação: {len(df_depois)}")
-                        
-                    st.markdown("---")
-                    st.subheader("Amostra dos Dados Cruzados")
-                    st.dataframe(df_final[['chat_id', 'criado_em', 'tpr_minutos', 'csat', 'atendente_telefone']])
+                st.markdown("---")
+                st.subheader("Amostra dos Dados Cruzados")
+                st.dataframe(df_final[['chat_id', 'criado_em', 'tpr_minutos', 'csat', 'atendente_telefone']])
