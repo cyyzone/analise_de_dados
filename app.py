@@ -65,14 +65,15 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
         page += 1
         
     lista_final = []
+    # Usamos os números apenas com os dígitos puros para bater com a limpeza
     numeros_permitidos = ['554139060321', '554139060320']
     
     for c in calls:
         if c.get("answered_at"):
+            # Pega o número do bloco correto que vimos no JSON
             numero_bruto = c.get("number", {}).get("digits", "")
-            if not numero_bruto:
-                numero_bruto = c.get("number", {}).get("name", "")
-                
+            
+            # O re.sub remove qualquer caractere que não seja número
             numero_limpo = re.sub(r'\D', '', str(numero_bruto))
             
             if numero_limpo in numeros_permitidos:
