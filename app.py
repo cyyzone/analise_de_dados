@@ -2,79 +2,180 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
+import time
 
-# Configuração inicial da página
+# Configuração da página
 st.set_page_config(page_title="Análise Aircall e Intercom", layout="wide")
 
 st.title("Análise de Tempo de Resposta e CSAT")
 st.write("Mensuração do impacto da automação de status no atendimento.")
 
-# Barra lateral para inputs
+# Menu lateral para configuração
 st.sidebar.header("Credenciais e Filtros")
-api_aircall = st.sidebar.text_input("Token da API do Aircall", type="password")
+api_aircall = st.sidebar.text_input("Aircall API (Formato: ID:TOKEN)", type="password")
 api_intercom = st.sidebar.text_input("Token da API do Intercom", type="password")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Período de Análise")
-data_inicio = st.sidebar.date_input("Data de Início")
-data_fim = st.sidebar.date_input("Data Final")
-data_corte = st.sidebar.date_input("Data de criação da automação")
+data_inicio = st.sidebar.date_input("Data de Início", datetime(2026, 1, 1))
+data_fim = st.sidebar.date_input("Data Final", datetime(2026, 1, 31))
+data_corte = st.sidebar.date_input("Data da Automação", datetime(2026, 1, 15))
 
-def extrair_dados_aircall(token, inicio, fim):
-    # Aqui você vai inserir o requests.get para o endpoint do Aircall
-    # O ideal é retornar uma lista de dicionários e converter para DataFrame
-    # Exemplo do formato esperado:
-    dados_mock = [
-        {"id": 1, "atendente": "analista@empresa.com", "inicio_chamada": "2026-05-10 10:00:00", "fim_chamada": "2026-05-10 10:15:00"}
-    ]
-    return pd.DataFrame(dados_mock)
+def extrair_dados_aircall(auth_str, inicio, fim):
+    # Converte as datas da interface para timestamp Unix
+    ts_inicio = int(time.mktime(inicio.timetuple()))
+    ts_fim = int(time.mktime(fim.timetuple())) + 86399
+    
+    # Divide o token se o usuário colocar no formato id:token para Basic Auth
+    if ":" in auth_str:
+        api_id, api_token = auth_str.split(":", 1)
+        auth = (api_id, api_token)
+    else:
+        auth = (auth_str, "")
+        
+    url = "https://api.aircall.io/v1/calls"
+    params = {"from": ts_inicio, "to": ts_fim, "per_page": 50, "order": "asc"}
+    
+    calls = []
+    page = 1
+    
+    while True:
+        params["page"] = page
+        response = requests.get(url, params=params, auth=auth)
+        if response.status_code != 200:
+            st.error(f"Erro no Aircall: {response.status_code}")
+            break
+            
+        data = response.json()
+        calls.extend(data.get("calls", []))
+        
+        meta = data.get("meta", {})
+        if not meta.get("next_page_link") or page >= meta.get("max_pages", 1):
+            break
+        page += 1
+        
+    lista_final = []
+    for c in calls:
+        if c.get("answered_at"):
+            lista_final.append({
+                "call_id": c.get("id"),
+                "atendente": c.get("user", {}).get("email"),
+                "inicio_chamada": datetime.fromtimestamp(c.get("answered_at")),
+                "fim_chamada": datetime.fromtimestamp(c.get("ended_at")) if c.get("ended_at") else datetime.fromtimestamp(c.get("answered_at"))
+            })
+    return pd.DataFrame(lista_final)
 
 def extrair_dados_intercom(token, inicio, fim):
-    # Aqui você vai inserir o requests.post ou get para o Intercom
-    # Exemplo do formato esperado:
-    dados_mock = [
-        {"id": 101, "criado_em": "2026-05-10 10:05:00", "primeira_resposta_em": "2026-05-10 10:18:00", "csat": 4}
-    ]
-    return pd.DataFrame(dados_mock)
+    ts_inicio = int(time.mktime(inicio.timetuple()))
+    ts_fim = int(time.mktime(fim.timetuple())) + 86399
+    
+    url = "https://api.intercom.io/conversations/search"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    
+    query = {
+        "query": {
+            "operator": "AND",
+            "value": [
+                {"field": "created_at", "operator": ">", "value": ts_inicio},
+                {"field": "created_at", "operator": "<", "value": ts_fim}
+            ]
+        }
+    }
+    
+    response = requests.post(url, json=query, headers=headers)
+    if response.status_code != 200:
+        st.error(f"Erro no Intercom: {response.status_code}")
+        return pd.DataFrame()
+        
+    data = response.json()
+    conversations = data.get("conversations", [])
+    
+    lista_final = []
+    for conv in conversations:
+        stats = conv.get("statistics", {})
+        first_reply_ts = stats.get("first_admin_reply_at")
+        rating = conv.get("conversation_rating", {})
+        
+        lista_final.append({
+            "chat_id": conv.get("id"),
+            "criado_em": datetime.fromtimestamp(conv.get("created_at")),
+            "primeira_resposta_em": datetime.fromtimestamp(first_reply_ts) if first_reply_ts else None,
+            "csat": rating.get("value")
+        })
+    return pd.DataFrame(lista_final)
 
-if st.sidebar.button("Processar Análise"):
+if st.sidebar.button("Processar Análise Real"):
     if not api_aircall or not api_intercom:
-        st.warning("Por favor, insira os tokens das APIs para continuar.")
+        st.warning("Por favor, insira as credenciais nas barras laterais.")
     else:
-        with st.spinner("Extraindo e cruzando informações..."):
+        with st.spinner("Buscando dados das APIs e cruzando horários..."):
             
-            # 1. Busca os dados
             df_ligacoes = extrair_dados_aircall(api_aircall, data_inicio, data_fim)
             df_chats = extrair_dados_intercom(api_intercom, data_inicio, data_fim)
             
-            # 2. Converte as colunas de texto para formato de data/hora do Pandas
-            df_ligacoes['inicio_chamada'] = pd.to_datetime(df_ligacoes['inicio_chamada'])
-            df_ligacoes['fim_chamada'] = pd.to_datetime(df_ligacoes['fim_chamada'])
-            df_chats['criado_em'] = pd.to_datetime(df_chats['criado_em'])
-            df_chats['primeira_resposta_em'] = pd.to_datetime(df_chats['primeira_resposta_em'])
-            
-            # 3. Calcula o Tempo de Primeira Resposta (TPR) em minutos no Intercom
-            df_chats['tpr_minutos'] = (df_chats['primeira_resposta_em'] - df_chats['criado_em']).dt.total_seconds() / 60
-            
-            # 4. Lógica de cruzamento: Quais chats entraram enquanto o analista estava na ligação?
-            # Aqui você pode usar funções do Pandas para filtrar os chats onde a data 'criado_em' 
-            # está entre 'inicio_chamada' e 'fim_chamada' daquele dia.
-            
-            st.success("Dados cruzados com sucesso!")
-            
-            # 5. Exibição dos resultados na interface
-            st.subheader("Comparativo: Antes e Depois da Automação")
-            
-            col1, col2 = st.columns(2)
-            
-            # Estes valores são estáticos para visualização da interface
-            # No script final, você substituirá pelas médias calculadas no Pandas
-            with col1:
-                st.markdown("**Antes da Automação**")
-                st.metric(label="Tempo de Resposta Médio (TPR)", value="18 min")
-                st.metric(label="CSAT Médio", value="4.1")
+            if df_ligacoes.empty or df_chats.empty:
+                st.error("Não encontramos registros em uma das plataformas para o período selecionado.")
+            else:
+                # Conversão explícita de timezone/datetime para segurança no cruzamento
+                df_ligacoes['inicio_chamada'] = pd.to_datetime(df_ligacoes['inicio_chamada'])
+                df_ligacoes['fim_chamada'] = pd.to_datetime(df_ligacoes['fim_chamada'])
+                df_chats['criado_em'] = pd.to_datetime(df_chats['criado_em'])
+                df_chats['primeira_resposta_em'] = pd.to_datetime(df_chats['primeira_resposta_em'])
                 
-            with col2:
-                st.markdown("**Depois da Automação**")
-                st.metric(label="Tempo de Resposta Médio (TPR)", value="5 min", delta="-13 min", delta_color="inverse")
-                st.metric(label="CSAT Médio", value="4.8", delta="0.7")
+                # Calcula o tempo de resposta em minutos
+                df_chats['tpr_minutos'] = (df_chats['primeira_resposta_em'] - df_chats['criado_em']).dt.total_seconds() / 60
+                
+                # Cruzamento: Identificar chats que entraram no intervalo exato de cada ligação
+                chats_sobrepostos = []
+                for _, ligacao in df_ligacoes.iterrows():
+                    mask = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
+                    conversas_no_periodo = df_chats[mask].copy()
+                    if not conversas_no_periodo.empty:
+                        conversas_no_periodo['atendente_telefone'] = ligacao['atendente']
+                        conversas_no_periodo['id_chamada'] = ligacao['call_id']
+                        chats_sobrepostos.append(conversas_no_periodo)
+                
+                if not chats_sobrepostos:
+                    st.info("Nenhum chat entrou no exato momento em que os analistas estavam em ligações.")
+                else:
+                    df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
+                    
+                    # Divide os dados com base na data de criação da automação
+                    dt_corte_convertida = pd.to_datetime(data_corte)
+                    df_antes = df_final[df_final['criado_em'].dt.date < dt_corte_convertida.date()]
+                    df_depois = df_final[df_final['criado_em'].dt.date >= dt_corte_convertida.date()]
+                    
+                    # Cálculos das métricas
+                    tpr_antes = df_antes['tpr_minutos'].mean() if not df_antes.empty else 0
+                    tpr_depois = df_depois['tpr_minutos'].mean() if not df_depois.empty else 0
+                    csat_antes = df_antes['csat'].mean() if not df_antes.empty else 0
+                    csat_depois = df_depois['csat'].mean() if not df_depois.empty else 0
+                    
+                    # Exibição na Interface
+                    st.subheader("Resultados do Cruzamento de Dados")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("### Antes da Automação")
+                        st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_antes:.1f} min")
+                        st.metric(label="Satisfação Média (CSAT)", value=f"{csat_antes:.1f} ★" if csat_antes > 0 else "Sem dados")
+                        st.caption(f"Total de chats recebidos em ligação: {len(df_antes)}")
+                        
+                    with col2:
+                        st.markdown("### Depois da Automação")
+                        delta_tpr = tpr_depois - tpr_antes
+                        delta_csat = csat_depois - csat_antes if csat_antes > 0 and csat_depois > 0 else 0
+                        
+                        st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_depois:.1f} min", 
+                                  delta=f"{delta_tpr:.1f} min", delta_color="inverse")
+                        st.metric(label="Satisfação Média (CSAT)", value=f"{csat_depois:.1f} ★" if csat_depois > 0 else "Sem dados",
+                                  delta=f"{delta_csat:.1f} ★" if delta_csat != 0 else None)
+                        st.caption(f"Total de chats recebidos em ligação: {len(df_depois)}")
+                        
+                    st.markdown("---")
+                    st.subheader("Amostra dos Dados Cruzados")
+                    st.dataframe(df_final[['chat_id', 'criado_em', 'tpr_minutos', 'csat', 'atendente_telefone']])
