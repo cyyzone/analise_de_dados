@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import pytz
+import re
 
 st.set_page_config(page_title="Análise Aircall e Intercom", layout="wide")
 
@@ -23,10 +24,8 @@ data_inicio = st.sidebar.date_input("Data de Início", datetime(2026, 1, 1))
 data_fim = st.sidebar.date_input("Data Final", datetime(2026, 1, 31))
 data_corte = st.sidebar.date_input("Data da Automação", datetime(2026, 1, 15))
 
-# Fuso horário para correção das +3 horas
 fuso_br = pytz.timezone('America/Sao_Paulo')
 
-# Dicionário de mapeamento: E-mail Aircall -> ID Intercom
 mapa_analistas = {
     "rhayslla.junca@produttivo.com.br": "5281911",
     "douglas.david@produttivo.com.br": "5586698",
@@ -38,7 +37,6 @@ mapa_analistas = {
 }
 
 def extrair_dados_aircall(api_id, api_token, inicio, fim):
-    # Ajustando os timestamps para considerar o fuso de Brasília na busca
     inicio_dt = fuso_br.localize(datetime.combine(inicio, datetime.min.time()))
     fim_dt = fuso_br.localize(datetime.combine(fim, datetime.max.time()))
     ts_inicio = int(inicio_dt.timestamp())
@@ -67,16 +65,17 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
         page += 1
         
     lista_final = []
-    numeros_permitidos = ['+554139060321', '+554139060320']
+    numeros_permitidos = ['554139060321', '554139060320']
     
     for c in calls:
         if c.get("answered_at"):
-            # Filtro de número de telefone
             numero_bruto = c.get("number", {}).get("digits", "")
-            numero_limpo = numero_bruto.replace(" ", "") if numero_bruto else ""
+            if not numero_bruto:
+                numero_bruto = c.get("number", {}).get("name", "")
+                
+            numero_limpo = re.sub(r'\D', '', str(numero_bruto))
             
             if numero_limpo in numeros_permitidos:
-                # Conversão de horário corrigindo as 3 horas
                 inicio_chamada = pd.to_datetime(c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
                 fim_chamada = pd.to_datetime(c.get("ended_at") or c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
                 
@@ -84,7 +83,8 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
                     "call_id": c.get("id"),
                     "atendente": c.get("user", {}).get("email"),
                     "inicio_chamada": inicio_chamada,
-                    "fim_chamada": fim_chamada
+                    "fim_chamada": fim_chamada,
+                    "numero_telefone": numero_bruto
                 })
     return pd.DataFrame(lista_final)
 
@@ -128,7 +128,6 @@ def extrair_dados_intercom(token, inicio, fim):
         rating = conv.get("conversation_rating")
         csat_val = rating.get("value") if isinstance(rating, dict) else None
         
-        # Puxa o ID do analista que atendeu o chat
         assignee_id = str(conv.get("assignee", {}).get("id", ""))
         
         criado_em = pd.to_datetime(conv.get("created_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
@@ -149,8 +148,12 @@ if st.button("Processar Análise Real"):
         df_ligacoes = extrair_dados_aircall(aircall_id, aircall_token, data_inicio, data_fim)
         df_chats = extrair_dados_intercom(api_intercom, data_inicio, data_fim)
         
-        if df_ligacoes.empty or df_chats.empty:
-            st.warning("Não encontramos registros para os filtros aplicados neste período.")
+        if df_ligacoes.empty and df_chats.empty:
+            st.warning("Não encontramos registros no Aircall nem no Intercom para os filtros aplicados neste período.")
+        elif df_ligacoes.empty:
+            st.warning("O Intercom trouxe os chats, mas o Aircall não encontrou nenhuma ligação atendida nos números finais 0321 e 0320.")
+        elif df_chats.empty:
+            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat para a equipe 8115775 neste período.")
         else:
             st.subheader("Dados Brutos para Validação")
             col_raw1, col_raw2 = st.columns(2)
@@ -170,7 +173,6 @@ if st.button("Processar Análise Real"):
                 email_atendente = ligacao['atendente']
                 id_intercom_esperado = mapa_analistas.get(email_atendente)
                 
-                # O chat deve acontecer no intervalo da ligação E ser do mesmo analista
                 mask_tempo = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
                 mask_analista = (df_chats['assignee_id'] == id_intercom_esperado)
                 
@@ -219,7 +221,6 @@ if st.button("Processar Análise Real"):
                     
                 st.markdown("---")
                 st.subheader("Detalhamento para Validação")
-                st.write("Abaixo estão os chats que caíram para o analista enquanto ele falava ao telefone.")
                 
                 colunas_exibicao = [
                     'id_chamada', 'atendente_telefone', 'inicio_chamada', 'fim_chamada', 
