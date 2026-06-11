@@ -107,7 +107,7 @@ def extrair_dados_intercom(token, inicio, fim):
             "value": [
                 {"field": "created_at", "operator": ">", "value": ts_inicio},
                 {"field": "created_at", "operator": "<", "value": ts_fim},
-                {"field": "team_assignee_id", "operator": "=", "value": "8115775"}
+                {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
             ]
         }
     }
