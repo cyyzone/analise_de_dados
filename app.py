@@ -117,7 +117,7 @@ def extrair_dados_intercom(token, inicio, fim):
             "value": [
                 {"field": "created_at", "operator": ">", "value": ts_inicio},
                 {"field": "created_at", "operator": "<", "value": ts_fim},
-                {"field": "team_assignee_id", "operator": "=", "value": "8115775"}
+                {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
             ]
         }
     }
@@ -177,7 +177,7 @@ if st.button("Processar Análise Real"):
         elif df_ligacoes.empty:
             st.warning("O Intercom trouxe os chats, mas o Aircall não encontrou nenhuma ligação atendida nos números finais 0321 e 0320.")
         elif df_chats.empty:
-            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat para a equipe 8115775 neste período.")
+            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat para a equipe 2975006 neste período.")
         else:
             st.subheader("Dados Brutos para Validação")
             col_raw1, col_raw2 = st.columns(2)
