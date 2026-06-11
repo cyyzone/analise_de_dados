@@ -36,6 +36,15 @@ mapa_analistas = {
     "marcelo.misugi@produttivo.com.br": "8126602"
 }
 
+def formatar_tempo(minutos_float):
+    if pd.isna(minutos_float):
+        return "-"
+    segundos_totais = int(abs(minutos_float) * 60)
+    minutos = int(segundos_totais // 60)
+    segundos = int(segundos_totais % 60)
+    sinal = "-" if minutos_float < 0 else ""
+    return f"{sinal}{minutos:02d}m {segundos:02d}s"
+
 def extrair_dados_aircall(api_id, api_token, inicio, fim):
     auth = (api_id, api_token)
     url = "https://api.aircall.io/v1/calls"
@@ -119,8 +128,7 @@ def extrair_dados_intercom(token, inicio, fim):
                 "operator": "AND",
                 "value": [
                     {"field": "created_at", "operator": ">", "value": ts_inicio},
-                    {"field": "created_at", "operator": "<", "value": ts_fim},
-                    {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
+                    {"field": "created_at", "operator": "<", "value": ts_fim}
                 ]
             }
         }
@@ -183,24 +191,12 @@ if st.button("Processar Análise Real"):
         elif df_chats.empty:
             st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat neste período.")
         else:
-            st.subheader("Dados Brutos para Validação")
-            col_raw1, col_raw2 = st.columns(2)
-            with col_raw1:
-                st.markdown(f"**Ligações Aircall Filtradas ({len(df_ligacoes)} encontradas)**")
-                st.dataframe(df_ligacoes)
-            with col_raw2:
-                st.markdown(f"**Chats Intercom ({len(df_chats)} encontrados)**")
-                st.dataframe(df_chats)
-                
-            st.markdown("---")
-            
             df_chats['tpr_minutos'] = (df_chats['primeira_resposta_em'] - df_chats['criado_em']).dt.total_seconds() / 60
             
             chats_sobrepostos = []
             for _, ligacao in df_ligacoes.iterrows():
                 email_atendente = str(ligacao['atendente']).strip().lower() if pd.notna(ligacao['atendente']) else ""
                 
-                # Agora o filtro é feito apenas pela janela de tempo exata da ligação
                 mask_tempo = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
                 conversas_no_periodo = df_chats[mask_tempo].copy()
                 
@@ -225,12 +221,15 @@ if st.button("Processar Análise Real"):
                 csat_antes = df_antes['csat'].mean() if not df_antes.empty else 0
                 csat_depois = df_depois['csat'].mean() if not df_depois.empty else 0
                 
+                # Criando a coluna com o formato visual em minutos e segundos para a tabela
+                df_final['tpr_formatado'] = df_final['tpr_minutos'].apply(formatar_tempo)
+                
                 st.subheader("Resultados do Cruzamento de Dados")
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown("### Antes da Automação")
-                    st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_antes:.1f} min")
+                    st.metric(label="Tempo de Resposta Médio (TPR)", value=formatar_tempo(tpr_antes))
                     st.metric(label="Satisfação Média (CSAT)", value=f"{csat_antes:.1f} *" if csat_antes > 0 else "Sem dados")
                     st.caption(f"Total de chats em conflito de horário: {len(df_antes)}")
                     
@@ -239,8 +238,8 @@ if st.button("Processar Análise Real"):
                     delta_tpr = tpr_depois - tpr_antes
                     delta_csat = csat_depois - csat_antes if csat_antes > 0 and csat_depois > 0 else 0
                     
-                    st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_depois:.1f} min", 
-                              delta=f"{delta_tpr:.1f} min", delta_color="inverse")
+                    st.metric(label="Tempo de Resposta Médio (TPR)", value=formatar_tempo(tpr_depois), 
+                              delta=formatar_tempo(delta_tpr), delta_color="inverse")
                     st.metric(label="Satisfação Média (CSAT)", value=f"{csat_depois:.1f} *" if csat_depois > 0 else "Sem dados",
                               delta=f"{delta_csat:.1f} *" if delta_csat != 0 else None)
                     st.caption(f"Total de chats em conflito de horário: {len(df_depois)}")
@@ -248,10 +247,9 @@ if st.button("Processar Análise Real"):
                 st.markdown("---")
                 st.subheader("Detalhamento para Validação")
                 
-                # Adicionei o assignee_id para você investigar quem a API diz que atendeu o chat
                 colunas_exibicao = [
                     'id_chamada', 'atendente_telefone', 'inicio_chamada', 'fim_chamada', 
-                    'chat_id', 'assignee_id', 'criado_em', 'tpr_minutos', 'csat'
+                    'chat_id', 'assignee_id', 'criado_em', 'tpr_formatado', 'csat'
                 ]
                 
                 st.dataframe(df_final[colunas_exibicao])
