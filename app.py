@@ -116,6 +116,19 @@ if st.button("Processar Análise Real"):
         if df_ligacoes.empty or df_chats.empty:
             st.warning("Não encontramos registros completos para o período selecionado.")
         else:
+            st.subheader("Dados Brutos para Validação")
+            st.write("Verifique se os horários listados abaixo fazem sentido e se o volume confere com o esperado.")
+            
+            col_raw1, col_raw2 = st.columns(2)
+            with col_raw1:
+                st.markdown(f"**Ligações Aircall ({len(df_ligacoes)} encontradas)**")
+                st.dataframe(df_ligacoes)
+            with col_raw2:
+                st.markdown(f"**Chats Intercom ({len(df_chats)} encontrados)**")
+                st.dataframe(df_chats)
+                
+            st.markdown("---")
+            
             df_ligacoes['inicio_chamada'] = pd.to_datetime(df_ligacoes['inicio_chamada'])
             df_ligacoes['fim_chamada'] = pd.to_datetime(df_ligacoes['fim_chamada'])
             df_chats['criado_em'] = pd.to_datetime(df_chats['criado_em'])
@@ -128,7 +141,6 @@ if st.button("Processar Análise Real"):
                 mask = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
                 conversas_no_periodo = df_chats[mask].copy()
                 if not conversas_no_periodo.empty:
-                    # Guardando os dados da ligação junto com o chat
                     conversas_no_periodo['atendente_telefone'] = ligacao['atendente']
                     conversas_no_periodo['id_chamada'] = ligacao['call_id']
                     conversas_no_periodo['inicio_chamada'] = ligacao['inicio_chamada']
@@ -136,7 +148,7 @@ if st.button("Processar Análise Real"):
                     chats_sobrepostos.append(conversas_no_periodo)
             
             if not chats_sobrepostos:
-                st.info("Nenhum chat entrou no exato momento em que os analistas estavam em ligações.")
+                st.info("Após cruzar as tabelas acima, nenhum chat entrou no exato momento em que os analistas estavam em ligações.")
             else:
                 df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
                 
