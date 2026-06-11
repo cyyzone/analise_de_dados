@@ -79,7 +79,6 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
                         inicio_chamada = pd.to_datetime(c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
                         fim_chamada = pd.to_datetime(c.get("ended_at") or c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
                         
-                        # Trava de segurança para usuários nulos
                         dados_usuario = c.get("user") or {}
                         
                         lista_final.append({
@@ -99,11 +98,6 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
     return pd.DataFrame(lista_final)
 
 def extrair_dados_intercom(token, inicio, fim):
-    inicio_dt = fuso_br.localize(datetime.combine(inicio, datetime.min.time()))
-    fim_dt = fuso_br.localize(datetime.combine(fim, datetime.max.time()))
-    ts_inicio = int(inicio_dt.timestamp())
-    ts_fim = int(fim_dt.timestamp())
-    
     url = "https://api.intercom.io/conversations/search"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -111,59 +105,69 @@ def extrair_dados_intercom(token, inicio, fim):
         "Content-Type": "application/json"
     }
     
-    body = {
-        "query": {
-            "operator": "AND",
-            "value": [
-                {"field": "created_at", "operator": ">", "value": ts_inicio},
-                {"field": "created_at", "operator": "<", "value": ts_fim},
-                {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
-            ]
-        }
-    }
-    
-    conversations = []
-    
-    while True:
-        response = requests.post(url, json=body, headers=headers)
-        if response.status_code != 200:
-            st.error(f"Erro no Intercom: {response.status_code} - {response.text}")
-            break
-            
-        data = response.json()
-        conversations.extend(data.get("conversations", []))
-        
-        pages = data.get("pages", {})
-        next_page = pages.get("next", {})
-        starting_after = next_page.get("starting_after")
-        
-        if not starting_after:
-            break
-            
-        body["pagination"] = {"starting_after": starting_after}
-        time.sleep(0.2)
-        
     lista_final = []
-    for conv in conversations:
-        stats = conv.get("statistics", {})
-        first_reply_ts = stats.get("first_admin_reply_at")
+    dias = pd.date_range(start=inicio, end=fim)
+    
+    for dia in dias:
+        inicio_dt = fuso_br.localize(datetime.combine(dia.date(), datetime.min.time()))
+        fim_dt = fuso_br.localize(datetime.combine(dia.date(), datetime.max.time()))
+        ts_inicio = int(inicio_dt.timestamp())
+        ts_fim = int(fim_dt.timestamp())
         
-        rating = conv.get("conversation_rating")
-        csat_val = rating.get("value") if isinstance(rating, dict) else None
+        body = {
+            "query": {
+                "operator": "AND",
+                "value": [
+                    {"field": "created_at", "operator": ">", "value": ts_inicio},
+                    {"field": "created_at", "operator": "<", "value": ts_fim},
+                    {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
+                ]
+            }
+        }
         
-        assignee_id = str(conv.get("assignee", {}).get("id", ""))
-        
-        criado_em = pd.to_datetime(conv.get("created_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
-        primeira_resposta_em = pd.to_datetime(first_reply_ts, unit='s', utc=True).tz_convert(fuso_br).tz_localize(None) if first_reply_ts else pd.NaT
-        
-        lista_final.append({
-            "chat_id": conv.get("id"),
-            "assignee_id": assignee_id,
-            "criado_em": criado_em,
-            "primeira_resposta_em": primeira_resposta_em,
-            "csat": csat_val
-        })
-        
+        while True:
+            response = requests.post(url, json=body, headers=headers)
+            if response.status_code == 429:
+                time.sleep(2)
+                continue
+                
+            if response.status_code != 200:
+                st.error(f"Erro no Intercom ({dia.date()}): {response.status_code}")
+                break
+                
+            data = response.json()
+            conversations = data.get("conversations", [])
+            
+            for conv in conversations:
+                stats = conv.get("statistics", {})
+                first_reply_ts = stats.get("first_admin_reply_at")
+                
+                rating = conv.get("conversation_rating")
+                csat_val = rating.get("value") if isinstance(rating, dict) else None
+                
+                assignee_id = str(conv.get("assignee", {}).get("id", "")).strip()
+                
+                criado_em = pd.to_datetime(conv.get("created_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
+                primeira_resposta_em = pd.to_datetime(first_reply_ts, unit='s', utc=True).tz_convert(fuso_br).tz_localize(None) if first_reply_ts else pd.NaT
+                
+                lista_final.append({
+                    "chat_id": conv.get("id"),
+                    "assignee_id": assignee_id,
+                    "criado_em": criado_em,
+                    "primeira_resposta_em": primeira_resposta_em,
+                    "csat": csat_val
+                })
+                
+            pages = data.get("pages", {})
+            next_page = pages.get("next", {})
+            starting_after = next_page.get("starting_after")
+            
+            if not starting_after:
+                break
+                
+            body["pagination"] = {"starting_after": starting_after}
+            time.sleep(0.2)
+            
     return pd.DataFrame(lista_final)
 
 if st.button("Processar Análise Real"):
@@ -175,9 +179,9 @@ if st.button("Processar Análise Real"):
         if df_ligacoes.empty and df_chats.empty:
             st.warning("Não encontramos registros no Aircall nem no Intercom para os filtros aplicados neste período.")
         elif df_ligacoes.empty:
-            st.warning("O Intercom trouxe os chats, mas o Aircall não encontrou nenhuma ligação atendida nos números finais 0321 e 0320.")
+            st.warning("O Intercom trouxe os chats, mas o Aircall não encontrou nenhuma ligação atendida.")
         elif df_chats.empty:
-            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat para a equipe 2975006 neste período.")
+            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat neste período.")
         else:
             st.subheader("Dados Brutos para Validação")
             col_raw1, col_raw2 = st.columns(2)
@@ -185,7 +189,7 @@ if st.button("Processar Análise Real"):
                 st.markdown(f"**Ligações Aircall Filtradas ({len(df_ligacoes)} encontradas)**")
                 st.dataframe(df_ligacoes)
             with col_raw2:
-                st.markdown(f"**Chats Intercom Filtrados ({len(df_chats)} encontrados)**")
+                st.markdown(f"**Chats Intercom ({len(df_chats)} encontrados)**")
                 st.dataframe(df_chats)
                 
             st.markdown("---")
@@ -194,13 +198,11 @@ if st.button("Processar Análise Real"):
             
             chats_sobrepostos = []
             for _, ligacao in df_ligacoes.iterrows():
-                email_atendente = ligacao['atendente']
-                id_intercom_esperado = mapa_analistas.get(email_atendente)
+                email_atendente = str(ligacao['atendente']).strip().lower() if pd.notna(ligacao['atendente']) else ""
                 
+                # Agora o filtro é feito apenas pela janela de tempo exata da ligação
                 mask_tempo = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
-                mask_analista = (df_chats['assignee_id'] == id_intercom_esperado)
-                
-                conversas_no_periodo = df_chats[mask_tempo & mask_analista].copy()
+                conversas_no_periodo = df_chats[mask_tempo].copy()
                 
                 if not conversas_no_periodo.empty:
                     conversas_no_periodo['atendente_telefone'] = email_atendente
@@ -210,7 +212,7 @@ if st.button("Processar Análise Real"):
                     chats_sobrepostos.append(conversas_no_periodo)
             
             if not chats_sobrepostos:
-                st.info("Nenhum chat foi atribuído ao mesmo analista no exato momento em que ele estava na ligação.")
+                st.info("Nenhum chat entrou na fila no exato momento das ligações.")
             else:
                 df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
                 
@@ -230,7 +232,7 @@ if st.button("Processar Análise Real"):
                     st.markdown("### Antes da Automação")
                     st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_antes:.1f} min")
                     st.metric(label="Satisfação Média (CSAT)", value=f"{csat_antes:.1f} *" if csat_antes > 0 else "Sem dados")
-                    st.caption(f"Total de chats com o analista em ligação: {len(df_antes)}")
+                    st.caption(f"Total de chats em conflito de horário: {len(df_antes)}")
                     
                 with col2:
                     st.markdown("### Depois da Automação")
@@ -241,14 +243,15 @@ if st.button("Processar Análise Real"):
                               delta=f"{delta_tpr:.1f} min", delta_color="inverse")
                     st.metric(label="Satisfação Média (CSAT)", value=f"{csat_depois:.1f} *" if csat_depois > 0 else "Sem dados",
                               delta=f"{delta_csat:.1f} *" if delta_csat != 0 else None)
-                    st.caption(f"Total de chats com o analista em ligação: {len(df_depois)}")
+                    st.caption(f"Total de chats em conflito de horário: {len(df_depois)}")
                     
                 st.markdown("---")
                 st.subheader("Detalhamento para Validação")
                 
+                # Adicionei o assignee_id para você investigar quem a API diz que atendeu o chat
                 colunas_exibicao = [
                     'id_chamada', 'atendente_telefone', 'inicio_chamada', 'fim_chamada', 
-                    'chat_id', 'criado_em', 'tpr_minutos', 'csat'
+                    'chat_id', 'assignee_id', 'criado_em', 'tpr_minutos', 'csat'
                 ]
                 
                 st.dataframe(df_final[colunas_exibicao])
