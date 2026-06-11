@@ -79,9 +79,12 @@ def extrair_dados_aircall(api_id, api_token, inicio, fim):
                         inicio_chamada = pd.to_datetime(c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
                         fim_chamada = pd.to_datetime(c.get("ended_at") or c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
                         
+                        # Trava de segurança para usuários nulos
+                        dados_usuario = c.get("user") or {}
+                        
                         lista_final.append({
                             "call_id": c.get("id"),
-                            "atendente": c.get("user", {}).get("email"),
+                            "atendente": dados_usuario.get("email"),
                             "inicio_chamada": inicio_chamada,
                             "fim_chamada": fim_chamada,
                             "numero_telefone": numero_bruto
