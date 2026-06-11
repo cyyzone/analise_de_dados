@@ -37,56 +37,67 @@ mapa_analistas = {
 }
 
 def extrair_dados_aircall(api_id, api_token, inicio, fim):
-    inicio_dt = fuso_br.localize(datetime.combine(inicio, datetime.min.time()))
-    fim_dt = fuso_br.localize(datetime.combine(fim, datetime.max.time()))
-    ts_inicio = int(inicio_dt.timestamp())
-    ts_fim = int(fim_dt.timestamp())
-    
     auth = (api_id, api_token)
     url = "https://api.aircall.io/v1/calls"
-    params = {"from": ts_inicio, "to": ts_fim, "per_page": 50, "order": "asc"}
-    
-    calls = []
-    page = 1
-    
-    while True:
-        params["page"] = page
-        response = requests.get(url, params=params, auth=auth)
-        if response.status_code != 200:
-            st.error(f"Erro no Aircall: {response.status_code}")
-            break
-            
-        data = response.json()
-        calls.extend(data.get("calls", []))
-        
-        meta = data.get("meta", {})
-        if not meta.get("next_page_link") or page >= meta.get("max_pages", 1):
-            break
-        page += 1
-        
     lista_final = []
-    # Usamos os números apenas com os dígitos puros para bater com a limpeza
     numeros_permitidos = ['554139060321', '554139060320']
     
-    for c in calls:
-        if c.get("answered_at"):
-            # Pega o número do bloco correto que vimos no JSON
-            numero_bruto = c.get("number", {}).get("digits", "")
+    # Cria uma lista com todos os dias do período selecionado
+    dias = pd.date_range(start=inicio, end=fim)
+    
+    for dia in dias:
+        # Define o início e fim exatos para cada dia da lista
+        inicio_dt = fuso_br.localize(datetime.combine(dia.date(), datetime.min.time()))
+        fim_dt = fuso_br.localize(datetime.combine(dia.date(), datetime.max.time()))
+        ts_inicio = int(inicio_dt.timestamp())
+        ts_fim = int(fim_dt.timestamp())
+        
+        params = {"from": ts_inicio, "to": ts_fim, "per_page": 50, "order": "asc"}
+        page = 1
+        
+        while True:
+            params["page"] = page
+            response = requests.get(url, params=params, auth=auth)
             
-            # O re.sub remove qualquer caractere que não seja número
-            numero_limpo = re.sub(r'\D', '', str(numero_bruto))
-            
-            if numero_limpo in numeros_permitidos:
-                inicio_chamada = pd.to_datetime(c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
-                fim_chamada = pd.to_datetime(c.get("ended_at") or c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
+            # Se a API pedir para irmos mais devagar (Erro 429), ele pausa e tenta de novo
+            if response.status_code == 429:
+                time.sleep(2)
+                continue
                 
-                lista_final.append({
-                    "call_id": c.get("id"),
-                    "atendente": c.get("user", {}).get("email"),
-                    "inicio_chamada": inicio_chamada,
-                    "fim_chamada": fim_chamada,
-                    "numero_telefone": numero_bruto
-                })
+            if response.status_code != 200:
+                break
+                
+            data = response.json()
+            calls = data.get("calls", [])
+            
+            for c in calls:
+                if c.get("answered_at"):
+                    numero_bruto = c.get("number", {}).get("digits", "")
+                    if not numero_bruto:
+                        numero_bruto = c.get("number", {}).get("name", "")
+                        
+                    numero_limpo = re.sub(r'\D', '', str(numero_bruto))
+                    
+                    if numero_limpo in numeros_permitidos:
+                        inicio_chamada = pd.to_datetime(c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
+                        fim_chamada = pd.to_datetime(c.get("ended_at") or c.get("answered_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
+                        
+                        lista_final.append({
+                            "call_id": c.get("id"),
+                            "atendente": c.get("user", {}).get("email"),
+                            "inicio_chamada": inicio_chamada,
+                            "fim_chamada": fim_chamada,
+                            "numero_telefone": numero_bruto
+                        })
+            
+            meta = data.get("meta", {})
+            if not meta.get("next_page_link") or page >= meta.get("max_pages", 1):
+                break
+            
+            page += 1
+            # Pausa rápida para não sobrecarregar o Aircall
+            time.sleep(0.2)
+            
     return pd.DataFrame(lista_final)
 
 def extrair_dados_intercom(token, inicio, fim):
