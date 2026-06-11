@@ -4,13 +4,11 @@ import requests
 from datetime import datetime
 import time
 
-# Configuração da página
 st.set_page_config(page_title="Análise Aircall e Intercom", layout="wide")
 
 st.title("Análise de Tempo de Resposta e CSAT")
 st.write("Mensuração do impacto da automação de status no atendimento.")
 
-# Puxando as credenciais do arquivo oculto secrets.toml
 try:
     aircall_id = st.secrets["AIRCALL_ID"]
     aircall_token = st.secrets["AIRCALL_TOKEN"]
@@ -19,7 +17,6 @@ except KeyError:
     st.error("Erro: As credenciais não foram encontradas no arquivo .streamlit/secrets.toml")
     st.stop()
 
-# Menu lateral apenas para os Filtros
 st.sidebar.header("Período de Análise")
 data_inicio = st.sidebar.date_input("Data de Início", datetime(2026, 1, 1))
 data_fim = st.sidebar.date_input("Data Final", datetime(2026, 1, 31))
@@ -131,8 +128,11 @@ if st.button("Processar Análise Real"):
                 mask = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
                 conversas_no_periodo = df_chats[mask].copy()
                 if not conversas_no_periodo.empty:
+                    # Guardando os dados da ligação junto com o chat
                     conversas_no_periodo['atendente_telefone'] = ligacao['atendente']
                     conversas_no_periodo['id_chamada'] = ligacao['call_id']
+                    conversas_no_periodo['inicio_chamada'] = ligacao['inicio_chamada']
+                    conversas_no_periodo['fim_chamada'] = ligacao['fim_chamada']
                     chats_sobrepostos.append(conversas_no_periodo)
             
             if not chats_sobrepostos:
@@ -155,7 +155,7 @@ if st.button("Processar Análise Real"):
                 with col1:
                     st.markdown("### Antes da Automação")
                     st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_antes:.1f} min")
-                    st.metric(label="Satisfação Média (CSAT)", value=f"{csat_antes:.1f} ★" if csat_antes > 0 else "Sem dados")
+                    st.metric(label="Satisfação Média (CSAT)", value=f"{csat_antes:.1f} *" if csat_antes > 0 else "Sem dados")
                     st.caption(f"Total de chats em ligação: {len(df_antes)}")
                     
                 with col2:
@@ -165,10 +165,25 @@ if st.button("Processar Análise Real"):
                     
                     st.metric(label="Tempo de Resposta Médio (TPR)", value=f"{tpr_depois:.1f} min", 
                               delta=f"{delta_tpr:.1f} min", delta_color="inverse")
-                    st.metric(label="Satisfação Média (CSAT)", value=f"{csat_depois:.1f} ★" if csat_depois > 0 else "Sem dados",
-                              delta=f"{delta_csat:.1f} ★" if delta_csat != 0 else None)
+                    st.metric(label="Satisfação Média (CSAT)", value=f"{csat_depois:.1f} *" if csat_depois > 0 else "Sem dados",
+                              delta=f"{delta_csat:.1f} *" if delta_csat != 0 else None)
                     st.caption(f"Total de chats em ligação: {len(df_depois)}")
                     
                 st.markdown("---")
-                st.subheader("Amostra dos Dados Cruzados")
-                st.dataframe(df_final[['chat_id', 'criado_em', 'tpr_minutos', 'csat', 'atendente_telefone']])
+                st.subheader("Detalhamento para Validação")
+                st.write("Abaixo estão todos os chats que entraram exatamente enquanto o analista estava ao telefone.")
+                
+                colunas_exibicao = [
+                    'id_chamada', 'atendente_telefone', 'inicio_chamada', 'fim_chamada', 
+                    'chat_id', 'criado_em', 'tpr_minutos', 'csat'
+                ]
+                
+                st.dataframe(df_final[colunas_exibicao])
+                
+                csv = df_final[colunas_exibicao].to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Baixar dados para validação (CSV)",
+                    data=csv,
+                    file_name='validacao_automacao_status.csv',
+                    mime='text/csv',
+                )
