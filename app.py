@@ -128,7 +128,8 @@ def extrair_dados_intercom(token, inicio, fim):
                 "operator": "AND",
                 "value": [
                     {"field": "created_at", "operator": ">", "value": ts_inicio},
-                    {"field": "created_at", "operator": "<", "value": ts_fim}
+                    {"field": "created_at", "operator": "<", "value": ts_fim},
+                    {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
                 ]
             }
         }
@@ -189,7 +190,7 @@ if st.button("Processar Análise Real"):
         elif df_ligacoes.empty:
             st.warning("O Intercom trouxe os chats, mas o Aircall não encontrou nenhuma ligação atendida.")
         elif df_chats.empty:
-            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat neste período.")
+            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat para a equipe 2975006 neste período.")
         else:
             df_chats['tpr_minutos'] = (df_chats['primeira_resposta_em'] - df_chats['criado_em']).dt.total_seconds() / 60
             
@@ -208,7 +209,7 @@ if st.button("Processar Análise Real"):
                     chats_sobrepostos.append(conversas_no_periodo)
             
             if not chats_sobrepostos:
-                st.info("Nenhum chat entrou na fila no exato momento das ligações.")
+                st.info("Nenhum chat entrou na fila do atendimento no exato momento das ligações.")
             else:
                 df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
                 
@@ -221,7 +222,6 @@ if st.button("Processar Análise Real"):
                 csat_antes = df_antes['csat'].mean() if not df_antes.empty else 0
                 csat_depois = df_depois['csat'].mean() if not df_depois.empty else 0
                 
-                # Criando a coluna com o formato visual em minutos e segundos para a tabela
                 df_final['tpr_formatado'] = df_final['tpr_minutos'].apply(formatar_tempo)
                 
                 st.subheader("Resultados do Cruzamento de Dados")
@@ -244,7 +244,7 @@ if st.button("Processar Análise Real"):
                               delta=f"{delta_csat:.1f} *" if delta_csat != 0 else None)
                     st.caption(f"Total de chats em conflito de horário: {len(df_depois)}")
                     
-                st.markdown("---")
+                st.markdown("***")
                 st.subheader("Detalhamento para Validação")
                 
                 colunas_exibicao = [
