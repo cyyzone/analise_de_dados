@@ -153,7 +153,6 @@ def extrair_dados_intercom(token, inicio, fim):
                 rating = conv.get("conversation_rating")
                 csat_val = rating.get("value") if isinstance(rating, dict) else None
                 
-                # Ajuste para pegar o campo correto do JSON que você encontrou
                 admin_id = conv.get("admin_assignee_id")
                 assignee_id = str(admin_id).strip() if admin_id else ""
                 
@@ -217,10 +216,8 @@ if st.button("Processar Análise Real"):
                         "chat_id": chat['chat_id']
                     })
                 
-                margem_inicio = ligacao['inicio_chamada'] - pd.Timedelta(minutes=15)
-                margem_fim = ligacao['fim_chamada'] + pd.Timedelta(minutes=5)
-                
-                mask_tempo = (df_chats['criado_em'] >= margem_inicio) & (df_chats['criado_em'] <= margem_fim)
+                # Filtro de tempo exato sem margens extras
+                mask_tempo = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
                 mask_analista = (df_chats['assignee_id'] == id_intercom_esperado)
                 
                 conversas_no_periodo = df_chats[mask_tempo & mask_analista].copy()
@@ -233,7 +230,7 @@ if st.button("Processar Análise Real"):
                     chats_sobrepostos.append(conversas_no_periodo)
             
             if not chats_sobrepostos:
-                st.info("Nenhum chat entrou na fila para o mesmo analista no momento das ligações.")
+                st.info("Nenhum chat entrou na fila para o mesmo analista no momento exato das ligações.")
             else:
                 df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
                 
@@ -288,7 +285,7 @@ if st.button("Processar Análise Real"):
             
             st.markdown("***")
             st.subheader("Raio-X de Horários (Diagnóstico)")
-            st.write("Abaixo estão todas as combinações de ligações e chats dos analistas no mesmo dia. Use para ver exatamente os segundos que a API registrou.")
+            st.write("Abaixo estão todas as combinações de ligações e chats dos analistas no mesmo dia.")
             if 'diagnostico_pessoal' in locals() and diagnostico_pessoal:
                 df_diag = pd.DataFrame(diagnostico_pessoal)
                 st.dataframe(df_diag)
