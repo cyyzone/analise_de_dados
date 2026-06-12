@@ -128,8 +128,7 @@ def extrair_dados_intercom(token, inicio, fim):
                 "operator": "AND",
                 "value": [
                     {"field": "created_at", "operator": ">", "value": ts_inicio},
-                    {"field": "created_at", "operator": "<", "value": ts_fim},
-                    {"field": "team_assignee_id", "operator": "=", "value": "2975006"}
+                    {"field": "created_at", "operator": "<", "value": ts_fim}
                 ]
             }
         }
@@ -154,7 +153,9 @@ def extrair_dados_intercom(token, inicio, fim):
                 rating = conv.get("conversation_rating")
                 csat_val = rating.get("value") if isinstance(rating, dict) else None
                 
-                assignee_id = str(conv.get("assignee", {}).get("id", "")).strip()
+                # Ajuste para pegar o campo correto do JSON que você encontrou
+                admin_id = conv.get("admin_assignee_id")
+                assignee_id = str(admin_id).strip() if admin_id else ""
                 
                 criado_em = pd.to_datetime(conv.get("created_at"), unit='s', utc=True).tz_convert(fuso_br).tz_localize(None)
                 primeira_resposta_em = pd.to_datetime(first_reply_ts, unit='s', utc=True).tz_convert(fuso_br).tz_localize(None) if first_reply_ts else pd.NaT
@@ -190,21 +191,36 @@ if st.button("Processar Análise Real"):
         elif df_ligacoes.empty:
             st.warning("O Intercom trouxe os chats, mas o Aircall não encontrou nenhuma ligação atendida.")
         elif df_chats.empty:
-            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat para a equipe 2975006 neste período.")
+            st.warning("O Aircall trouxe as ligações, mas o Intercom não retornou nenhum chat neste período.")
         else:
             df_chats['tpr_minutos'] = (df_chats['primeira_resposta_em'] - df_chats['criado_em']).dt.total_seconds() / 60
             
             chats_sobrepostos = []
+            diagnostico_pessoal = []
+            
             for _, ligacao in df_ligacoes.iterrows():
                 email_atendente = str(ligacao['atendente']).strip().lower() if pd.notna(ligacao['atendente']) else ""
                 id_intercom_esperado = mapa_analistas.get(email_atendente)
                 
-                # Pula a ligação se o atendente não estiver no nosso dicionário
                 if not id_intercom_esperado:
                     continue
                 
-                # Exige que o chat esteja na janela de tempo E seja do mesmo analista
-                mask_tempo = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
+                mask_diagnostico = (df_chats['assignee_id'] == id_intercom_esperado)
+                chats_do_analista = df_chats[mask_diagnostico].copy()
+                
+                for _, chat in chats_do_analista.iterrows():
+                    diagnostico_pessoal.append({
+                        "atendente": email_atendente,
+                        "inicio_chamada": ligacao['inicio_chamada'],
+                        "fim_chamada": ligacao['fim_chamada'],
+                        "chat_criado_em": chat['criado_em'],
+                        "chat_id": chat['chat_id']
+                    })
+                
+                margem_inicio = ligacao['inicio_chamada'] - pd.Timedelta(minutes=15)
+                margem_fim = ligacao['fim_chamada'] + pd.Timedelta(minutes=5)
+                
+                mask_tempo = (df_chats['criado_em'] >= margem_inicio) & (df_chats['criado_em'] <= margem_fim)
                 mask_analista = (df_chats['assignee_id'] == id_intercom_esperado)
                 
                 conversas_no_periodo = df_chats[mask_tempo & mask_analista].copy()
@@ -217,7 +233,7 @@ if st.button("Processar Análise Real"):
                     chats_sobrepostos.append(conversas_no_periodo)
             
             if not chats_sobrepostos:
-                st.info("Nenhum chat entrou na fila do atendimento para o mesmo analista no exato momento das ligações.")
+                st.info("Nenhum chat entrou na fila para o mesmo analista no momento das ligações.")
             else:
                 df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
                 
@@ -269,3 +285,10 @@ if st.button("Processar Análise Real"):
                     file_name='validacao_automacao_status.csv',
                     mime='text/csv',
                 )
+            
+            st.markdown("***")
+            st.subheader("Raio-X de Horários (Diagnóstico)")
+            st.write("Abaixo estão todas as combinações de ligações e chats dos analistas no mesmo dia. Use para ver exatamente os segundos que a API registrou.")
+            if 'diagnostico_pessoal' in locals() and diagnostico_pessoal:
+                df_diag = pd.DataFrame(diagnostico_pessoal)
+                st.dataframe(df_diag)
