@@ -197,9 +197,17 @@ if st.button("Processar Análise Real"):
             chats_sobrepostos = []
             for _, ligacao in df_ligacoes.iterrows():
                 email_atendente = str(ligacao['atendente']).strip().lower() if pd.notna(ligacao['atendente']) else ""
+                id_intercom_esperado = mapa_analistas.get(email_atendente)
                 
+                # Pula a ligação se o atendente não estiver no nosso dicionário
+                if not id_intercom_esperado:
+                    continue
+                
+                # Exige que o chat esteja na janela de tempo E seja do mesmo analista
                 mask_tempo = (df_chats['criado_em'] >= ligacao['inicio_chamada']) & (df_chats['criado_em'] <= ligacao['fim_chamada'])
-                conversas_no_periodo = df_chats[mask_tempo].copy()
+                mask_analista = (df_chats['assignee_id'] == id_intercom_esperado)
+                
+                conversas_no_periodo = df_chats[mask_tempo & mask_analista].copy()
                 
                 if not conversas_no_periodo.empty:
                     conversas_no_periodo['atendente_telefone'] = email_atendente
@@ -209,7 +217,7 @@ if st.button("Processar Análise Real"):
                     chats_sobrepostos.append(conversas_no_periodo)
             
             if not chats_sobrepostos:
-                st.info("Nenhum chat entrou na fila do atendimento no exato momento das ligações.")
+                st.info("Nenhum chat entrou na fila do atendimento para o mesmo analista no exato momento das ligações.")
             else:
                 df_final = pd.concat(chats_sobrepostos).drop_duplicates(subset=['chat_id'])
                 
